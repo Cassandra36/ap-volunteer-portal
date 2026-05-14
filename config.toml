@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#55e0dc" # e.g., the bright color for buttons
+backgroundColor = "#7400b8"       # Main background
+secondaryBackgroundColor = "#000000" # Sidebar and input boxes
+textColor = "#ffffff"
+font = "sans serif"
