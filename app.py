@@ -1,5 +1,7 @@
 import streamlit as st
 import datetime
+from datetime import timedelta
+
 
 # --- PAGE SETUP ---
 st.set_page_config(
@@ -36,23 +38,30 @@ with st.container(border=True):
     col_in, col_out = st.columns(2)
     
     with col_in:
-        # Streamlit will automatically color this button with your 'primaryColor' from config.toml
         if st.button("CLOCK IN", key="btn_in", use_container_width=True):
             if not user_email:
                 st.error("Please enter email in sidebar")
             else:
-                st.session_state.start_time = datetime.datetime.now()
-                st.toast("Shift Started!")
+                # 1. First, define what 'local_now' is
+                local_now = datetime.datetime.now() - timedelta(hours=4)
+                
+                # 2. Now you can use it
+                st.session_state.start_time = local_now
+                st.toast(f"Shift Started at {local_now.strftime('%I:%M %p')}")
 
     with col_out:
         if st.button("CLOCK OUT", key="btn_out", use_container_width=True):
             if st.session_state.start_time:
-                duration = datetime.datetime.now() - st.session_state.start_time
-                st.session_state.start_time = None
+                # Use the same 'local_now' logic for the end time
+                end_time = datetime.datetime.now() - timedelta(hours=4)
+                duration = end_time - st.session_state.start_time
+                
+                # Format the duration to be readable
                 st.balloons()
-                st.success(f"Shift Logged! Total: {duration}")
+                st.success(f"Shift logged! Duration: {duration}")
+                st.session_state.start_time = None
             else:
-                st.info("Not currently clocked in")
+                st.error("You aren't clocked in!")
 
     if st.session_state.start_time:
         st.success(f"● Currently Clocked In since {st.session_state.start_time.strftime('%H:%M')}")
