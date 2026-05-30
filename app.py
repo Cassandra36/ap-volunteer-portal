@@ -2,7 +2,6 @@ import streamlit as st
 import datetime
 import requests
 import base64
-import json
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,52 +19,28 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
-    /* Card-style containers */
     [data-testid="stVerticalBlockBorderWrapper"] {
         border-radius: 12px !important;
         padding: 4px 8px !important;
     }
-    /* Clock-in button green */
     div[data-testid="column"]:first-child .stButton > button {
-        background-color: #1D9E75;
-        color: white;
-        border: none;
-        font-weight: 600;
-        border-radius: 8px;
+        background-color: #1D9E75; color: white;
+        border: none; font-weight: 600; border-radius: 8px;
     }
-    div[data-testid="column"]:first-child .stButton > button:hover {
-        background-color: #0F6E56;
-    }
-    /* Clock-out button red */
+    div[data-testid="column"]:first-child .stButton > button:hover { background-color: #0F6E56; }
     div[data-testid="column"]:last-child .stButton > button {
-        background-color: #E24B4A;
-        color: white;
-        border: none;
-        font-weight: 600;
-        border-radius: 8px;
+        background-color: #E24B4A; color: white;
+        border: none; font-weight: 600; border-radius: 8px;
     }
-    div[data-testid="column"]:last-child .stButton > button:hover {
-        background-color: #A32D2D;
-    }
-    /* Metric cards */
-    [data-testid="metric-container"] {
-        background-color: #f5f5f5;
-        border-radius: 10px;
-        padding: 12px 16px;
-    }
-    /* Footer */
+    div[data-testid="column"]:last-child .stButton > button:hover { background-color: #A32D2D; }
+    [data-testid="metric-container"] { background-color: #f5f5f5; border-radius: 10px; padding: 12px 16px; }
     footer { visibility: hidden; }
-    .custom-footer {
-        text-align: center;
-        font-size: 12px;
-        color: #999;
-        margin-top: 2rem;
-    }
+    .custom-footer { text-align: center; font-size: 12px; color: #999; margin-top: 2rem; }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# TIMEZONE  –  edit this to match your org's timezone
+# TIMEZONE  –  edit to match your org
 # ---------------------------------------------------------------------------
 LOCAL_TZ = ZoneInfo("America/New_York")
 
@@ -82,249 +57,20 @@ def fmt_duration(td: timedelta) -> str:
     return f"{h}h {m:02d}m"
 
 # ---------------------------------------------------------------------------
-# NEONCRM API HELPERS
-# ---------------------------------------------------------------------------
-# Store your NeonCRM credentials in Streamlit secrets:
-#   .streamlit/secrets.toml
+# NEONCRM v2 REST API HELPERS
+# Credentials live in .streamlit/secrets.toml:
 #   [neon]
-#   org_id   = "your-org-id"
-#   api_key  = "your-api-key"
+#   org_id  = "your-org-id"
+#   api_key = "your-api-key"
+# ---------------------------------------------------------------------------
 
 def _neon_headers() -> dict:
     org_id  = st.secrets["neon"]["org_id"]
     api_key = st.secrets["neon"]["api_key"]
     creds   = base64.b64encode(f"{org_id}:{api_key}".encode()).decode()
-    return {
-        "Authorization": f"Basic {creds}",
-        "Content-Type":  "application/json",
-    }
+    return {"Authorization": f"Basic {creds}", "Content-Type": "application/json"}
 
-def _neon_base() -> str:
-    org_id = st.secrets["neon"]["org_id"]
-    return f"https://api.neoncrm.com/neonws/services/api"
-
-
-# ── Fetch active/upcoming events from NeonCRM ──────────────────────────────
-@st.cache_data(ttl=300)   # cache for 5 minutes
-def fetch_neon_events() -> list[dict]:
-    """
-    Calls NeonCRM's Event Search endpoint and returns a list of upcoming events.
-    Docs: https://developer.neoncrm.com/api/events/search/
-    """
-    try:
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        url   = f"{_neon_base()}/event/listEvents"
-        payload = {
-            "listEventsRequest": {
-                "userCredentials": {
-                    "apiKey":         st.secrets["neon"]["api_key"],
-                    "orgId":          st.secrets["neon"]["org_id"],
-                },
-                "outputFields": {
-                    "idNamePair": [
-                        {"id": "Event Id"},
-                        {"id": "Event Name"},
-                        {"id": "Event Start Date"},
-                        {"id": "Event End Date"},
-                        {"id": "Event Start Time"},
-                        {"id": "Event Registration Count"},
-                        {"id": "Event Maximum Attendees"},
-                        {"id": "Event Registration Open"},
-                    ]
-                },
-                "searchFields": {
-                    "searchField": [
-                        {
-                            "field": "Event Start Date",
-                            "operator": "GREATER_AND_EQUAL",
-                            "value": today,
-                        }
-                    ]
-                },
-                "page": {
-                    "currentPage": 1,
-                    "pageSize": 20,
-                    "sortColumn": "Event Start Date",
-                    "sortDirection": "ASC",
-                },
-            }
-        }
-        resp = requests.post(url, json=payload, timeout=10)
-        resp.raise_for_status()
-        data   = resp.json()
-        events = (
-            data
-            .get("listEventsResponse", {})
-            .get("searchResults", {})
-            .get("nameValuePairs", [])
-        )
-        # Normalise each event row into a flat dict
-        parsed = []
-        for row in events:
-            pairs = row.get("nameValuePair", [])
-            d = {p["name"]: p.get("value", "") for p in pairs}
-            parsed.append(d)
-        return parsed
-    except Exception as e:
-        return []   # handled gracefully in the UI
-
-
-# ── Look up a volunteer's NeonCRM account ID by email ──────────────────────
-@st.cache_data(ttl=60)
-def fetch_account_id(email: str) -> str | None:
-    try:
-        url = f"{_neon_base()}/account/listAccounts"
-        payload = {
-            "listAccountsRequest": {
-                "userCredentials": {
-                    "apiKey": st.secrets["neon"]["api_key"],
-                    "orgId":  st.secrets["neon"]["org_id"],
-                },
-                "searches": {
-                    "search": [{"field": "Email", "operator": "EQUAL", "value": email}]
-                },
-                "outputFields": {
-                    "idNamePair": [{"id": "Account ID"}]
-                },
-                "page": {"currentPage": 1, "pageSize": 1},
-            }
-        }
-        resp = requests.post(url, json=payload, timeout=10)
-        resp.raise_for_status()
-        pairs = (
-            resp.json()
-            .get("listAccountsResponse", {})
-            .get("searchResults", {})
-            .get("nameValuePairs", [{}])[0]
-            .get("nameValuePair", [])
-        )
-        d = {p["name"]: p.get("value", "") for p in pairs}
-        return d.get("Account ID")
-    except Exception:
-        return None
-
-
-# ── Fetch total volunteer hours for a given account ────────────────────────
-@st.cache_data(ttl=60)
-def fetch_volunteer_hours(account_id: str) -> float:
-    """
-    Queries NeonCRM's volunteer hour logs for the given account.
-    Adjust the endpoint/field names to match your NeonCRM field setup.
-    """
-    try:
-        url = f"{_neon_base()}/volunteer/listVolunteerHours"
-        payload = {
-            "listVolunteerHoursRequest": {
-                "userCredentials": {
-                    "apiKey": st.secrets["neon"]["api_key"],
-                    "orgId":  st.secrets["neon"]["org_id"],
-                },
-                "searches": {
-                    "search": [
-                        {"field": "Account ID", "operator": "EQUAL", "value": account_id}
-                    ]
-                },
-                "outputFields": {
-                    "idNamePair": [{"id": "Hours"}]
-                },
-                "page": {"currentPage": 1, "pageSize": 200},
-            }
-        }
-        resp = requests.post(url, json=payload, timeout=10)
-        resp.raise_for_status()
-        rows = (
-            resp.json()
-            .get("listVolunteerHoursResponse", {})
-            .get("searchResults", {})
-            .get("nameValuePairs", [])
-        )
-        total = 0.0
-        for row in rows:
-            for p in row.get("nameValuePair", []):
-                if p["name"] == "Hours":
-                    try:
-                        total += float(p.get("value", 0))
-                    except (TypeError, ValueError):
-                        pass
-        return total
-    except Exception:
-        return 0.0
-
-
-# ── Push a completed shift into NeonCRM ────────────────────────────────────
-def push_shift_to_neon(
-    account_id: str,
-    event_id:   str,
-    start_dt:   datetime.datetime,
-    end_dt:     datetime.datetime,
-    hours:      float,
-    note:       str = "",
-) -> bool:
-    """
-    Creates a volunteer hour record in NeonCRM.
-    Docs: https://developer.neoncrm.com/api/volunteers/hours/
-    """
-    try:
-        url = f"{_neon_base()}/volunteer/createVolunteerHours"
-        payload = {
-            "createVolunteerHoursRequest": {
-                "userCredentials": {
-                    "apiKey": st.secrets["neon"]["api_key"],
-                    "orgId":  st.secrets["neon"]["org_id"],
-                },
-                "volunteerHours": {
-                    "accountId": account_id,
-                    "eventId":   event_id if event_id else "",
-                    "hours":     round(hours, 2),
-                    "startDate": start_dt.strftime("%Y-%m-%d"),
-                    "startTime": start_dt.strftime("%H:%M:%S"),
-                    "endDate":   end_dt.strftime("%Y-%m-%d"),
-                    "endTime":   end_dt.strftime("%H:%M:%S"),
-                    "note":      note,
-                    "status":    "Approved",
-                },
-            }
-        }
-        resp = requests.post(url, json=payload, timeout=10)
-        resp.raise_for_status()
-        result = resp.json().get("createVolunteerHoursResponse", {})
-        return result.get("operationResult") == "SUCCESS"
-    except Exception:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# FALLBACK DEMO EVENTS (used when NeonCRM credentials are not configured)
-# ---------------------------------------------------------------------------
-DEMO_EVENTS = [
-    {
-        "Event Id":                   "demo-1",
-        "Event Name":                 "Community Outreach Day",
-        "Event Start Date":           "2026-05-28",
-        "Event Start Time":           "09:00",
-        "Event Registration Open":    "Yes",
-        "Event Registration Count":   "12",
-        "Event Maximum Attendees":    "30",
-    },
-    {
-        "Event Id":                   "demo-2",
-        "Event Name":                 "Empowerment Workshop",
-        "Event Start Date":           "2026-06-02",
-        "Event Start Time":           "14:00",
-        "Event Registration Open":    "Yes",
-        "Event Registration Count":   "8",
-        "Event Maximum Attendees":    "20",
-    },
-    {
-        "Event Id":                   "demo-3",
-        "Event Name":                 "Peer Support Training",
-        "Event Start Date":           "2026-06-14",
-        "Event Start Time":           "10:00",
-        "Event Registration Open":    "Yes",
-        "Event Registration Count":   "5",
-        "Event Maximum Attendees":    "15",
-    },
-]
+NEON_BASE = "https://api.neoncrm.com/v2"
 
 def neon_configured() -> bool:
     try:
@@ -335,21 +81,152 @@ def neon_configured() -> bool:
         return False
 
 
+# ── Fetch upcoming events ────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def fetch_neon_events() -> tuple[list[dict], str]:
+    """Returns (events, error_string). error_string is '' on success."""
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    url   = f"{NEON_BASE}/events"
+    params = {
+        "startDateAfter": today,
+        "currentPage":    0,
+        "pageSize":       50,
+        "sortColumn":     "startDate",
+        "sortDirection":  "ASC",
+    }
+    try:
+        resp = requests.get(url, headers=_neon_headers(), params=params, timeout=10)
+    except requests.exceptions.ConnectionError as e:
+        return [], f"Connection error — {e}"
+    except requests.exceptions.Timeout:
+        return [], "Request timed out after 10 seconds."
+
+    if resp.status_code == 401:
+        return [], "401 Unauthorized — double-check your org_id and api_key in secrets.toml."
+    if resp.status_code == 403:
+        return [], "403 Forbidden — your API key may not have Events read permission in NeonCRM."
+    if not resp.ok:
+        return [], f"HTTP {resp.status_code} error: {resp.text[:400]}"
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        return [], f"Could not parse JSON response: {e}\n\nRaw: {resp.text[:300]}"
+
+    raw = data.get("events") or []
+    parsed = []
+    for ev in raw:
+        parsed.append({
+            "Event Id":                 str(ev.get("id", "")),
+            "Event Name":               ev.get("name", "Untitled"),
+            "Event Start Date":         ev.get("startDate", ""),
+            "Event End Date":           ev.get("endDate", ""),
+            "Event Start Time":         ev.get("startTime", ""),
+            "Event Registration Open":  "Yes" if ev.get("enableEventRegistrationForm") else "No",
+            "Event Registration Count": str(ev.get("registrantCount", "") or ""),
+            "Event Maximum Attendees":  str(ev.get("maximumAttendees", "") or ""),
+        })
+    return parsed, ""
+
+
+# ── Look up account by email ─────────────────────────────────────────────────
+@st.cache_data(ttl=60)
+def fetch_account_id(email: str) -> tuple[str | None, str]:
+    """Returns (account_id, error_string)."""
+    url    = f"{NEON_BASE}/accounts"
+    params = {"userType": "INDIVIDUAL", "email": email, "currentPage": 0, "pageSize": 1}
+    try:
+        resp = requests.get(url, headers=_neon_headers(), params=params, timeout=10)
+    except Exception as e:
+        return None, str(e)
+
+    if resp.status_code == 401:
+        return None, "401 Unauthorized — check credentials."
+    if not resp.ok:
+        return None, f"HTTP {resp.status_code}: {resp.text[:200]}"
+
+    try:
+        accounts = resp.json().get("accounts") or []
+        if accounts:
+            return str(accounts[0].get("accountId", "")), ""
+        return None, ""
+    except Exception as e:
+        return None, f"Parse error: {e}"
+
+
+# ── Fetch volunteer hours from NeonCRM ───────────────────────────────────────
+@st.cache_data(ttl=60)
+def fetch_volunteer_hours(account_id: str) -> float:
+    """
+    Reads volunteer hours from NeonCRM v2.
+    NeonCRM stores volunteer hours as Activity records — adjust if your org
+    uses a custom field instead.
+    """
+    url    = f"{NEON_BASE}/accounts/{account_id}/volunteerHours"
+    params = {"currentPage": 0, "pageSize": 200}
+    try:
+        resp = requests.get(url, headers=_neon_headers(), params=params, timeout=10)
+        if not resp.ok:
+            return 0.0
+        rows = resp.json().get("volunteerHours") or []
+        return sum(float(r.get("hours", 0) or 0) for r in rows)
+    except Exception:
+        return 0.0
+
+
+# ── Push a completed shift ───────────────────────────────────────────────────
+def push_shift_to_neon(
+    account_id: str,
+    event_id:   str,
+    start_dt:   datetime.datetime,
+    end_dt:     datetime.datetime,
+    hours:      float,
+    note:       str = "",
+) -> tuple[bool, str]:
+    """Returns (success, error_message)."""
+    url = f"{NEON_BASE}/accounts/{account_id}/volunteerHours"
+    payload = {
+        "hours":     round(hours, 2),
+        "startDate": start_dt.strftime("%Y-%m-%d"),
+        "endDate":   end_dt.strftime("%Y-%m-%d"),
+        "note":      note,
+    }
+    if event_id:
+        payload["eventId"] = event_id
+    try:
+        resp = requests.post(url, headers=_neon_headers(), json=payload, timeout=10)
+        if resp.ok:
+            return True, ""
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return False, str(e)
+
+
 # ---------------------------------------------------------------------------
-# SESSION STATE INITIALISATION
+# DEMO DATA (shown when secrets.toml is not configured)
+# ---------------------------------------------------------------------------
+DEMO_EVENTS = [
+    {"Event Id": "demo-1", "Event Name": "Community Outreach Day",
+     "Event Start Date": "2026-05-28", "Event Start Time": "09:00",
+     "Event Registration Open": "Yes", "Event Registration Count": "12", "Event Maximum Attendees": "30"},
+    {"Event Id": "demo-2", "Event Name": "Empowerment Workshop",
+     "Event Start Date": "2026-06-02", "Event Start Time": "14:00",
+     "Event Registration Open": "Yes", "Event Registration Count": "8",  "Event Maximum Attendees": "20"},
+    {"Event Id": "demo-3", "Event Name": "Peer Support Training",
+     "Event Start Date": "2026-06-14", "Event Start Time": "10:00",
+     "Event Registration Open": "Yes", "Event Registration Count": "5",  "Event Maximum Attendees": "15"},
+]
+
+# ---------------------------------------------------------------------------
+# SESSION STATE
 # ---------------------------------------------------------------------------
 defaults = {
-    "start_time":    None,
-    "account_id":    None,
-    "total_hours":   0.0,
-    "history":       [],          # list of dicts: {date, event, duration_h}
-    "selected_event_id":   "",
-    "selected_event_name": "General Volunteer",
+    "start_time": None, "account_id": None, "total_hours": 0.0,
+    "history": [], "selected_event_id": "", "selected_event_name": "General Volunteer",
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
-
 
 # ---------------------------------------------------------------------------
 # HEADER
@@ -364,7 +241,7 @@ with mid_col:
 st.header("Volunteer Portal", divider="violet")
 
 # ---------------------------------------------------------------------------
-# SIDEBAR – login & info
+# SIDEBAR
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.title("💜 Autonomy Project")
@@ -372,33 +249,55 @@ with st.sidebar:
 
     user_email = st.text_input("Volunteer Email", placeholder="your@email.com")
 
-    # Look up account when email is provided
     if user_email and neon_configured():
         if st.button("🔍 Load My Profile", use_container_width=True):
             with st.spinner("Looking up account…"):
-                acct = fetch_account_id(user_email)
-                if acct:
+                acct, err = fetch_account_id(user_email)
+                if err:
+                    st.error(f"NeonCRM error: {err}")
+                elif acct:
                     st.session_state.account_id  = acct
-                    st.session_state.total_hours = fetch_volunteer_hours(acct)
-                    # Invalidate hours cache so next clock-out reflects new total
                     fetch_volunteer_hours.clear()
-                    st.success(f"Welcome back!")
+                    st.session_state.total_hours = fetch_volunteer_hours(acct)
+                    st.success("Welcome back!")
                 else:
-                    st.warning("Email not found in NeonCRM.\nCheck spelling or contact your coordinator.")
+                    st.warning("Email not found in NeonCRM. Check spelling or contact your coordinator.")
     elif user_email and not neon_configured():
-        # Demo mode – simulate a found account
         st.session_state.account_id = "demo-account"
 
     if not neon_configured():
-        st.info("⚙️ **Demo mode** – add NeonCRM credentials in `.streamlit/secrets.toml` to go live.")
+        st.info("⚙️ **Demo mode** — add NeonCRM credentials in `.streamlit/secrets.toml` to go live.")
 
     st.divider()
 
-    # Show hours in sidebar too
     if st.session_state.account_id:
         st.metric("My Total Hours", f"{st.session_state.total_hours:.1f} hrs")
 
-    st.caption("v2.0.0 | Secure Volunteer Portal")
+    st.caption("v2.1.0 | Secure Volunteer Portal")
+
+# ---------------------------------------------------------------------------
+# LOAD EVENTS  (with visible error if something goes wrong)
+# ---------------------------------------------------------------------------
+if neon_configured():
+    events_raw, events_err = fetch_neon_events()
+else:
+    events_raw, events_err = DEMO_EVENTS, ""
+
+if events_err:
+    st.error(f"⚠️ Could not load events from NeonCRM:\n\n`{events_err}`")
+    with st.expander("🔧 Troubleshooting tips"):
+        st.markdown("""
+**Check these in order:**
+1. Open `.streamlit/secrets.toml` and confirm `org_id` and `api_key` are correct — no extra spaces or quotes.
+2. In NeonCRM → Admin → API Keys, make sure the key has **Events** read permission.
+3. Make sure your NeonCRM org subdomain matches (some orgs use a custom domain).
+4. Try pasting this into your browser (replacing values) to test the raw API:
+   `https://api.neoncrm.com/v2/events?startDateAfter=2026-01-01`
+   — it should ask for Basic Auth credentials.
+        """)
+
+events_map    = {e["Event Name"]: e["Event Id"] for e in events_raw} if events_raw else {}
+event_options = ["General Volunteer"] + list(events_map.keys())
 
 # ---------------------------------------------------------------------------
 # METRICS ROW
@@ -407,12 +306,10 @@ col_m1, col_m2, col_m3 = st.columns(3)
 with col_m1:
     st.metric("Total Hours", f"{st.session_state.total_hours:.1f}")
 with col_m2:
-    shifts_done = len(st.session_state.history)
-    st.metric("Shifts This Session", shifts_done)
+    st.metric("Shifts This Session", len(st.session_state.history))
 with col_m3:
     if st.session_state.start_time:
-        elapsed = local_now() - st.session_state.start_time
-        elapsed_str = fmt_duration(elapsed)
+        elapsed_str = fmt_duration(local_now() - st.session_state.start_time)
     else:
         elapsed_str = "—"
     st.metric("Current Shift", elapsed_str)
@@ -424,17 +321,12 @@ st.write("")
 # ---------------------------------------------------------------------------
 st.write("### 🕒 Shift Tracking")
 
-# Event selector – populated from NeonCRM (or demo data)
-events_raw = fetch_neon_events() if neon_configured() else DEMO_EVENTS
-events_map  = {e["Event Name"]: e["Event Id"] for e in events_raw} if events_raw else {}
-event_options = ["General Volunteer"] + list(events_map.keys())
-
 with st.container(border=True):
     selected_event_name = st.selectbox(
         "Which event are you volunteering for?",
         options=event_options,
         key="event_selector",
-        help="Events are pulled live from NeonCRM",
+        help="Events pulled live from NeonCRM",
     )
     st.session_state.selected_event_name = selected_event_name
     st.session_state.selected_event_id   = events_map.get(selected_event_name, "")
@@ -463,10 +355,10 @@ with st.container(border=True):
                 duration = end_time - st.session_state.start_time
                 hours    = duration.total_seconds() / 3600
 
-                pushed = False
+                pushed, push_err = False, ""
                 if neon_configured() and st.session_state.account_id:
                     with st.spinner("Saving shift to NeonCRM…"):
-                        pushed = push_shift_to_neon(
+                        pushed, push_err = push_shift_to_neon(
                             account_id = st.session_state.account_id,
                             event_id   = st.session_state.selected_event_id,
                             start_dt   = st.session_state.start_time,
@@ -475,13 +367,13 @@ with st.container(border=True):
                             note       = f"Logged via Volunteer Portal – {selected_event_name}",
                         )
                         if pushed:
-                            # Refresh total hours from NeonCRM
                             fetch_volunteer_hours.clear()
                             st.session_state.total_hours = fetch_volunteer_hours(
                                 st.session_state.account_id
                             )
+                        elif push_err:
+                            st.warning(f"Shift saved locally but NeonCRM push failed: {push_err}")
 
-                # Record locally regardless
                 st.session_state.history.append({
                     "date":       end_time.strftime("%b %d, %Y"),
                     "event":      selected_event_name,
@@ -489,9 +381,8 @@ with st.container(border=True):
                     "clock_out":  fmt_time(end_time),
                     "duration_h": round(hours, 2),
                 })
-                st.session_state.total_hours = round(
-                    st.session_state.total_hours + hours, 2
-                )
+                if not pushed:
+                    st.session_state.total_hours = round(st.session_state.total_hours + hours, 2)
                 st.session_state.start_time = None
 
                 st.balloons()
@@ -502,7 +393,6 @@ with st.container(border=True):
                     f"**Event:** {selected_event_name}"
                 )
 
-    # Status indicator
     st.write("")
     if st.session_state.start_time:
         elapsed = local_now() - st.session_state.start_time
@@ -514,7 +404,7 @@ with st.container(border=True):
         st.info("⚪ Not currently clocked in")
 
 # ---------------------------------------------------------------------------
-# SHIFT HISTORY (this session)
+# SESSION HISTORY
 # ---------------------------------------------------------------------------
 if st.session_state.history:
     st.write("")
@@ -536,32 +426,30 @@ if st.session_state.history:
 st.write("")
 st.write("### 📅 Upcoming Events")
 
-if not events_raw:
-    st.info("No upcoming events found. Check your NeonCRM connection.")
-else:
+if not events_raw and not events_err:
+    st.info("No upcoming events found in NeonCRM. Events will appear here once they are created.")
+elif events_raw:
     for event in events_raw:
-        name        = event.get("Event Name", "Untitled Event")
-        start_date  = event.get("Event Start Date", "")
-        start_time  = event.get("Event Start Time", "")
-        reg_open    = event.get("Event Registration Open", "")
-        reg_count   = event.get("Event Registration Count", "")
-        max_attend  = event.get("Event Maximum Attendees", "")
+        name       = event.get("Event Name", "Untitled Event")
+        start_date = event.get("Event Start Date", "")
+        start_time = event.get("Event Start Time", "")
+        reg_open   = event.get("Event Registration Open", "")
+        reg_count  = event.get("Event Registration Count", "")
+        max_attend = event.get("Event Maximum Attendees", "")
 
-        # Format date nicely
         try:
-            dt_obj = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+            dt_obj       = datetime.datetime.strptime(start_date, "%Y-%m-%d")
             date_display = dt_obj.strftime("%B %d, %Y")
         except Exception:
             date_display = start_date
 
-        # Capacity pill
         capacity_str = ""
         if reg_count and max_attend:
             try:
-                pct = int(reg_count) / int(max_attend) * 100
+                pct          = int(reg_count) / int(max_attend) * 100
                 capacity_str = f"| {int(pct)}% full ({reg_count}/{max_attend})"
             except Exception:
-                capacity_str = ""
+                pass
 
         reg_label = "Registration Open" if reg_open == "Yes" else "Closed"
 
