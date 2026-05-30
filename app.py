@@ -229,7 +229,7 @@ DEMO_EVENTS = [
 # ---------------------------------------------------------------------------
 defaults = {
     "start_time": None, "account_id": None, "total_hours": 0.0,
-    "history": [], "selected_event_id": "", "selected_event_name": "General Volunteer",
+    "history": [], "selected_event_id": "", "selected_event_name": "General Volunteer", "pending_event_select": None, "current_event_index": 0,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -329,12 +329,18 @@ st.write("")
 st.write("### 🕒 Shift Tracking")
 
 with st.container(border=True):
+    # Resolve any pending selection from the event list "Select" buttons
+    if st.session_state.get("pending_event_select") and st.session_state["pending_event_select"] in event_options:
+        st.session_state["current_event_index"] = event_options.index(st.session_state["pending_event_select"])
+        st.session_state["pending_event_select"] = None
+
     selected_event_name = st.selectbox(
         "Which event are you volunteering for?",
         options=event_options,
-        key="event_selector",
+        index=st.session_state.get("current_event_index", 0),
         help="Events pulled live from NeonCRM",
     )
+    st.session_state["current_event_index"] = event_options.index(selected_event_name)
     st.session_state.selected_event_name = selected_event_name
     st.session_state.selected_event_id   = events_map.get(selected_event_name, "")
 
@@ -467,7 +473,7 @@ elif events_raw:
                 st.caption(f"{date_display}  {start_time}  |  {reg_label}  {capacity_str}")
             with ev_col2:
                 if st.button("Select", key=f"select_{event.get('Event Id', name)}", use_container_width=True):
-                    st.session_state.event_selector = name
+                    st.session_state.pending_event_select = name
                     st.toast(f"Event set to: {name}")
                     st.rerun()
 
