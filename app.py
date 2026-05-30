@@ -116,13 +116,20 @@ def fetch_neon_events() -> tuple[list[dict], str]:
     raw = data.get("events") or []
     parsed = []
     for ev in raw:
+        name     = ev.get("name", "Untitled")
+        reg_open = ev.get("enableEventRegistrationForm", False)
+        # Skip template events and closed events
+        if "template" in name.lower():
+            continue
+        if not reg_open:
+            continue
         parsed.append({
             "Event Id":                 str(ev.get("id", "")),
-            "Event Name":               ev.get("name", "Untitled"),
+            "Event Name":               name,
             "Event Start Date":         ev.get("startDate", ""),
             "Event End Date":           ev.get("endDate", ""),
             "Event Start Time":         ev.get("startTime", ""),
-            "Event Registration Open":  "Yes" if ev.get("enableEventRegistrationForm") else "No",
+            "Event Registration Open":  "Yes",
             "Event Registration Count": str(ev.get("registrantCount", "") or ""),
             "Event Maximum Attendees":  str(ev.get("maximumAttendees", "") or ""),
         })
