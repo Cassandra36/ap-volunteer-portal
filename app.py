@@ -4,8 +4,6 @@ import requests
 import base64
 from datetime import timedelta
 from zoneinfo import ZoneInfo
-# Imports the cookie manager backend
-import extra_streamlit_components as stx
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG & STYLING
@@ -30,9 +28,6 @@ st.markdown("""
 
 LOCAL_TZ = ZoneInfo("America/New_York")
 NEON_BASE = "https://api.neoncrm.com/v2"
-
-# Initialize Cookie Manager
-cookie_manager = stx.CookieManager()
 
 # ---------------------------------------------------------------------------
 # NEONCRM HELPERS
@@ -91,16 +86,16 @@ def push_shift_to_neon(account_id: str, start_dt: datetime.datetime, end_dt: dat
         return False, str(e)
 
 # ---------------------------------------------------------------------------
-# PERSISTENT STORAGE COOKIE HANDLING
+# PERSISTENT STORAGE USING QUERY PARAMS
 # ---------------------------------------------------------------------------
-# 1. Retrieve saved details from the user's browser if they exist
-saved_email = cookie_manager.get("volunteer_email")
-saved_start = cookie_manager.get("clock_in_time")
+# Read browser URL query parameters if they exist
+url_email = st.query_params.get("email", "")
+url_start = st.query_params.get("start", "")
 
-# 2. Synchronize cookies into active Session State variables
+# Sync URL parameters into standard session state
 if "start_time" not in st.session_state:
-    if saved_start:
-        st.session_state.start_time = datetime.datetime.fromisoformat(saved_start)
+    if url_start:
+        st.session_state.start_time = datetime.datetime.fromisoformat(url_start)
     else:
         st.session_state.start_time = None
 
@@ -121,18 +116,16 @@ st.divider()
 with st.sidebar:
     st.header("Volunteer Sign-In")
     
-    # Pre-populate with cookie email if returning
-    email_default = saved_email if saved_email else ""
-    user_email = st.text_input("Enter Email Address", value=email_default, placeholder="name@domain.com")
+    user_email = st.text_input("Enter Email Address", value=url_email, placeholder="name@domain.com")
     
     if user_email:
-        # Save email to cookies so they don't have to retype it next time
-        if user_email != saved_email:
-            cookie_manager.set("volunteer_email", user_email, expires_at=datetime.datetime.now() + timedelta(days=30))
+        # Save email parameters directly to the browser context
+        if user_email != url_email:
+            st.query_params["email"] = user_email
         
         if neon_configured():
-            # Automatically attempt loading details if profile is known but unlinked in current state
-            if not st.session_state.account_id or (user_email != saved_email):
+            # Automatically grab account data if email is known but state is fresh
+            if not st.session_state.account_id or (user_email != url_email):
                 acct, err = fetch_account_id(user_email)
                 if acct:
                     st.session_state.account_id = acct
@@ -176,8 +169,8 @@ else:
                     now = datetime.datetime.now(tz=LOCAL_TZ)
                     st.session_state.start_time = now
                     
-                    # Store timestamp string natively in browser cookie (remains for 1 day max)
-                    cookie_manager.set("clock_in_time", now.isoformat(), expires_at=datetime.datetime.now() + timedelta(days=1))
+                    # Store time stamp safely right in the app environment browser string
+                    st.query_params["start"] = now.isoformat()
                     
                     st.toast("🟢 Clocked in successfully!")
                     st.rerun()
@@ -210,8 +203,9 @@ else:
                     else:
                         st.session_state.total_hours += hours_worked
                     
-                    # Clear browser data on shift end
-                    cookie_manager.delete("clock_in_time")
+                    # Clear shift clock parameters but preserve email memory string
+                    if "start" in st.query_params:
+                        del st.query_params["start"]
                     st.session_state.start_time = None
                     st.session_state.shifts_logged += 1
                     
