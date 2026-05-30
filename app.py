@@ -4,6 +4,8 @@ import requests
 import base64
 from datetime import timedelta
 from zoneinfo import ZoneInfo
+# Imports the cookie manager backend
+import extra_streamlit_components as stx
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG & STYLING
@@ -28,6 +30,9 @@ st.markdown("""
 
 LOCAL_TZ = ZoneInfo("America/New_York")
 NEON_BASE = "https://api.neoncrm.com/v2"
+
+# Initialize Cookie Manager
+cookie_manager = stx.CookieManager()
 
 # ---------------------------------------------------------------------------
 # NEONCRM HELPERS
@@ -86,13 +91,26 @@ def push_shift_to_neon(account_id: str, start_dt: datetime.datetime, end_dt: dat
         return False, str(e)
 
 # ---------------------------------------------------------------------------
-# INITIALIZATION & APP HEADER
+# PERSISTENT STORAGE COOKIE HANDLING
 # ---------------------------------------------------------------------------
-if "start_time" not in st.session_state: st.session_state.start_time = None
+# 1. Retrieve saved details from the user's browser if they exist
+saved_email = cookie_manager.get("volunteer_email")
+saved_start = cookie_manager.get("clock_in_time")
+
+# 2. Synchronize cookies into active Session State variables
+if "start_time" not in st.session_state:
+    if saved_start:
+        st.session_state.start_time = datetime.datetime.fromisoformat(saved_start)
+    else:
+        st.session_state.start_time = None
+
 if "account_id" not in st.session_state: st.session_state.account_id = None
 if "total_hours" not in st.session_state: st.session_state.total_hours = 0.0
 if "shifts_logged" not in st.session_state: st.session_state.shifts_logged = 0
 
+# ---------------------------------------------------------------------------
+# APP HEADER
+# ---------------------------------------------------------------------------
 st.title("💜 Autonomy Project")
 st.subheader("Volunteer Time Clock")
 st.divider()
@@ -102,24 +120,30 @@ st.divider()
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.header("Volunteer Sign-In")
-    user_email = st.text_input("Enter Email Address", placeholder="name@domain.com")
+    
+    # Pre-populate with cookie email if returning
+    email_default = saved_email if saved_email else ""
+    user_email = st.text_input("Enter Email Address", value=email_default, placeholder="name@domain.com")
     
     if user_email:
+        # Save email to cookies so they don't have to retype it next time
+        if user_email != saved_email:
+            cookie_manager.set("volunteer_email", user_email, expires_at=datetime.datetime.now() + timedelta(days=30))
+        
         if neon_configured():
-            if st.button("🔍 Load My Profile", use_container_width=True):
-                with st.spinner("Finding account..."):
-                    acct, err = fetch_account_id(user_email)
-                    if err:
-                        st.error(err)
-                    elif acct:
-                        st.session_state.account_id = acct
-                        fetch_volunteer_hours.clear()
-                        st.session_state.total_hours = fetch_volunteer_hours(acct)
-                        st.success("Profile Loaded!")
-                    else:
-                        st.warning("Email not found in NeonCRM.")
+            # Automatically attempt loading details if profile is known but unlinked in current state
+            if not st.session_state.account_id or (user_email != saved_email):
+                acct, err = fetch_account_id(user_email)
+                if acct:
+                    st.session_state.account_id = acct
+                    st.session_state.total_hours = fetch_volunteer_hours(acct)
+            
+            if st.button("🔄 Refresh Total Hours", use_container_width=True):
+                if st.session_state.account_id:
+                    fetch_volunteer_hours.clear()
+                    st.session_state.total_hours = fetch_volunteer_hours(st.session_state.account_id)
+                    st.success("Hours updated!")
         else:
-            # Demo Mode Fallback
             st.session_state.account_id = "demo-account"
             st.info("⚙️ Demo Mode Active")
 
@@ -127,7 +151,7 @@ with st.sidebar:
 # METRICS & TIME CLOCK (MAIN INTERFACE)
 # ---------------------------------------------------------------------------
 if not st.session_state.account_id:
-    st.info("👋 Please enter and load your email address in the sidebar to begin tracking your hours.")
+    st.info("👋 Please enter your email address in the sidebar to load your profile and begin tracking your hours.")
 else:
     # 1. Hours Display
     col1, col2 = st.columns(2)
@@ -149,7 +173,12 @@ else:
                 if st.session_state.start_time:
                     st.warning("You are already clocked in.")
                 else:
-                    st.session_state.start_time = datetime.datetime.now(tz=LOCAL_TZ)
+                    now = datetime.datetime.now(tz=LOCAL_TZ)
+                    st.session_state.start_time = now
+                    
+                    # Store timestamp string natively in browser cookie (remains for 1 day max)
+                    cookie_manager.set("clock_in_time", now.isoformat(), expires_at=datetime.datetime.now() + timedelta(days=1))
+                    
                     st.toast("🟢 Clocked in successfully!")
                     st.rerun()
                     
@@ -162,7 +191,6 @@ else:
                     duration = end_time - st.session_state.start_time
                     hours_worked = duration.total_seconds() / 3600
                     
-                    # Ensure minimum time capture threshold (e.g., prevent accidental 0 sec clicks)
                     if hours_worked <= 0.001:
                         hours_worked = 0.01 
 
@@ -176,15 +204,16 @@ else:
                                 hours=hours_worked
                             )
                     
-                    # Update local metrics instantly
                     if pushed:
                         fetch_volunteer_hours.clear()
                         st.session_state.total_hours = fetch_volunteer_hours(st.session_state.account_id)
                     else:
                         st.session_state.total_hours += hours_worked
                     
-                    st.session_state.shifts_logged += 1
+                    # Clear browser data on shift end
+                    cookie_manager.delete("clock_in_time")
                     st.session_state.start_time = None
+                    st.session_state.shifts_logged += 1
                     
                     st.balloons()
                     st.success(f"✅ Shift saved! Worked: {hours_worked:.2f} hours.")
