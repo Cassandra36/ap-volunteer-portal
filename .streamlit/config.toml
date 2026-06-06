@@ -5,4 +5,5 @@ secondaryBackgroundColor = "#000000" # Sidebar and input boxes
 textColor = "#ffffff"
 font = "sans serif"
 [client]
-toolbarMode = "viewer"
+toolbarMode = "minimal"
+
