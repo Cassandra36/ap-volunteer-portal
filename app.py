@@ -4,34 +4,45 @@ import requests
 import base64
 from datetime import timedelta
 from zoneinfo import ZoneInfo
-import streamlit as st
 
-# Hides the Main Menu, Footer, and the Deploy Button
-hide_st_style = """
-            <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            .stAppDeployButton {visibility: hidden;}
-            </style>
-            """
-st.markdown(hide_st_style, unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
 # PAGE CONFIG
+# ---------------------------------------------------------------------------
 st.set_page_config(
     page_title="Autonomy Project – Volunteer Portal",
     page_icon="💜",
     layout="centered",
 )
 
+# Custom CSS targeting app aesthetics while keeping mobile sidebar triggers intact
 st.markdown("""
 <style>
-    footer { visibility: hidden; }
+    /* Safely hide deployment options and default footer without breaking menu toggles */
+    .stAppDeployButton { display: none !important; }
+    footer { visibility: hidden !important; }
+    
     .custom-footer { text-align: center; font-size: 12px; color: #999; margin-top: 2rem; }
-    [data-testid="metric-container"] { background-color: #f5f5f5; border-radius: 10px; padding: 12px 16px; }
+    
+    /* Responsive Mobile Metric Containers */
+    [data-testid="stMetricValue"] {
+        font-size: 1.3rem !important;
+        line-height: 1.1 !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.8rem !important;
+        white-space: nowrap !important;
+    }
+    [data-testid="metric-container"] { 
+        background-color: #f5f5f5; 
+        border-radius: 10px; 
+        padding: 8px 12px; 
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
 # TIMEZONE
+# ---------------------------------------------------------------------------
 LOCAL_TZ = ZoneInfo("America/New_York")
 
 def utc_now():
@@ -49,7 +60,9 @@ def fmt_duration(td):
     m, _   = divmod(rem, 60)
     return f"{h}h {m:02d}m"
 
+# ---------------------------------------------------------------------------
 # SESSION STATE
+# ---------------------------------------------------------------------------
 _DEFAULTS = {
     "user_email":          "",
     "account_id":          None,
@@ -70,7 +83,9 @@ def dbg(msg: str):
     ts = utc_now().astimezone(LOCAL_TZ).strftime("%H:%M:%S")
     st.session_state.debug_log.append(f"[{ts}] {msg}")
 
+# ---------------------------------------------------------------------------
 # NEONCRM API INTERFACE
+# ---------------------------------------------------------------------------
 NEON_BASE    = "https://api.neoncrm.com/v2"
 NEON_VERSION = "2.9"
 
@@ -90,7 +105,7 @@ def _neon_headers():
         "NEON-API-VERSION": NEON_VERSION,
     }
 
-# Opportunities 
+# ── Opportunities ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_neon_opportunities():
     url    = f"{NEON_BASE}/opportunities"
@@ -118,7 +133,7 @@ def fetch_neon_opportunities():
         })
     return parsed, ""
 
-# Shifts Lookup 
+# ── Shifts Lookup ────────────────────────────────────────────────────────────
 def get_or_create_active_shift(opportunity_id):
     url = f"{NEON_BASE}/opportunities/{opportunity_id}/shifts"
     try:
@@ -132,7 +147,7 @@ def get_or_create_active_shift(opportunity_id):
         return None, str(e)
     return None, ""
 
-# Account lookup 
+# ── Account lookup ───────────────────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def fetch_account_id(email):
     url    = f"{NEON_BASE}/accounts"
@@ -148,7 +163,7 @@ def fetch_account_id(email):
         return str(accounts[0].get("accountId", "")), ""
     return None, ""
 
-# Fetch Existing Hours via TimeSheets API (Exhaustive Calendar Year Scan)
+# ── Fetch Existing Hours via TimeSheets API (Exhaustive Calendar Year Scan) ──
 @st.cache_data(ttl=60)
 def fetch_volunteer_hours(account_id):
     url = f"{NEON_BASE}/timeSheets"
@@ -187,13 +202,12 @@ def fetch_volunteer_hours(account_id):
         dbg(f"fetch_volunteer_hours error: {e}")
         return 0.0, []
 
-# Smart Push Entry (POST or PUT depending on presence) 
+# ── Smart Push Entry (POST or PUT depending on presence) ────────────────────
 def push_shift_to_neon(account_id, opportunity_id, target_dt, hours):
     local_date = target_dt.astimezone(LOCAL_TZ)
     monday = local_date - timedelta(days=local_date.weekday())
     week_of_str = monday.strftime("%Y-%m-%d")
 
-    # Resolve Shift tracking dependency safely
     shift_id, _ = get_or_create_active_shift(opportunity_id)
 
     _, existing_sheets = fetch_volunteer_hours(account_id)
@@ -204,7 +218,6 @@ def push_shift_to_neon(account_id, opportunity_id, target_dt, hours):
             matched_sheet = sheet
             break
 
-    # Build individual time entry item dynamically based on Shift function availability
     new_item = {
         "roleId": "", 
         "date": local_date.strftime("%Y-%m-%d"),
@@ -216,7 +229,6 @@ def push_shift_to_neon(account_id, opportunity_id, target_dt, hours):
         new_item["shiftId"] = str(shift_id)
 
     if matched_sheet:
-        # ── PUT WORKFLOW (APPEND TO EXISTING TIMESHEET) ──
         timesheet_id = matched_sheet.get("id")
         url = f"{NEON_BASE}/timeSheets/{timesheet_id}"
         
@@ -257,7 +269,6 @@ def push_shift_to_neon(account_id, opportunity_id, target_dt, hours):
             return False, str(e)
             
     else:
-        # ── POST WORKFLOW (CREATE NEW TIMESHEET) ──
         url = f"{NEON_BASE}/timeSheets"
         payload = {
             "accountId": str(account_id),
@@ -277,90 +288,122 @@ def push_shift_to_neon(account_id, opportunity_id, target_dt, hours):
         except Exception as e:
             return False, str(e)
 
+# ---------------------------------------------------------------------------
 # UI LOGO AND HEADER SECTION
-c1, c2, c3 = st.columns([1, 1, 1])
-with c2:
-    try:
-        st.image("logo.png", width=120)
-    except Exception:
-        st.markdown("<h2 style='text-align:center'>💜</h2>", unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+try:
+    st.markdown(
+        """
+        <div style="display: flex; justify-content: center; align-items: center; margin-bottom: 10px;">
+            <img src="data:image/png;base64,{}" width="120">
+        </div>
+        """.format(base64.b64encode(open("logo.png", "rb").read()).decode()), 
+        unsafe_allow_html=True
+    )
+except Exception:
+    st.markdown("<h2 style='text-align:center; margin-bottom: 10px;'>💜</h2>", unsafe_allow_html=True)
 
 st.header("Volunteer Portal", divider="violet")
 
-# SIDEBAR CONTROL PANEL
+# ---------------------------------------------------------------------------
+# SIDEBAR CONTROL PANEL (SECURED & VISIBILITY RESTRICTED)
+# ---------------------------------------------------------------------------
 with st.sidebar:
     st.title("💜 Autonomy Project")
     st.divider()
 
+    # PUBLIC PORTAL SIGN-IN (Always accessible to all users)
     with st.form(key="profile_lookup_form", clear_on_submit=False):
         email_input = st.text_input(
-            "Volunteer Email",
+            "Volunteer Email Address",
             value=st.session_state.user_email,
             placeholder="your@email.com",
             key="email_field",
         )
-        submit_email = st.form_submit_button("➡️ Enter & Load Profile", use_container_width=True)
+        submit_email = st.form_submit_button("➡️ Log In & Load Profile", use_container_width=True)
 
     if submit_email:
         if not email_input.strip():
             st.error("Please enter a valid email address.")
         else:
             st.session_state.user_email = email_input
-            dbg(f"Email submitted via entry form: {email_input}")
+            dbg(f"Email profile queried: {email_input}")
             
             if neon_configured():
-                with st.spinner("Looking up account…"):
+                with st.spinner("Connecting to database registry..."):
                     acct, err = fetch_account_id(email_input)
                     if err:
-                        st.error(f"NeonCRM error: {err}")
+                        st.error(f"NeonCRM Sync Error: {err}")
                     elif acct:
                         st.session_state.account_id = acct
                         fetch_volunteer_hours.clear()
                         hours, _ = fetch_volunteer_hours(acct)
                         st.session_state.total_hours = hours
-                        st.success("Profile loaded!")
+                        st.success("Profile loaded successfully!")
                         st.rerun()
                     else:
-                        st.warning("Email not found in NeonCRM.")
+                        st.warning("Email not registered in database framework.")
             else:
                 st.session_state.account_id = "demo-account"
-                st.success("Demo profile initialized!")
+                st.success("Local sandbox profile initialized.")
                 st.rerun()
 
-    if not neon_configured() and st.session_state.user_email:
-        st.info("⚙️ Demo mode active")
+    # User Profile Metric Banner
+    if st.session_state.user_email and st.session_state.account_id:
+        st.caption("Active Session Context:")
+        st.info(f"👤 {st.session_state.user_email}")
+        st.metric("My YTD Total Hours", f"{st.session_state.total_hours:.2f} hrs")
+    else:
+        st.warning("🔒 Portal Standby Mode. Please enter your volunteer email to authenticate session context.")
 
     st.divider()
-    if st.session_state.account_id:
-        st.metric("My YTD Total Hours", f"{st.session_state.total_hours:.2f} hrs")
 
-    if st.button("🔄 Refresh System Data", use_container_width=True):
-        fetch_neon_opportunities.clear()
-        fetch_volunteer_hours.clear()
-        st.toast("Cache flushed and refreshed!")
-        st.rerun()
+    # ADMINISTRATIVE ACCESS NODE (Hidden/Locked under a master passkey)
+    admin_toggle = st.checkbox("⚙️ Access Administrative Suite", value=False)
+    is_admin = False
+    
+    if admin_toggle:
+        pass_token = st.text_input("Enter Master Credential Key", type="password")
+        if pass_token == "autonomy2026":
+            is_admin = True
+            st.success("Authorized: Administrative Engine Active.")
+        elif pass_token:
+            st.error("Authentication Failure: Access Denied.")
 
-    with st.expander("🔧 Debug Console", expanded=False):
-        if st.session_state.debug_log:
-            for line in reversed(st.session_state.debug_log[-40:]):
-                st.caption(line)
-        else:
-            st.caption("No log data available.")
-        if st.button("Clear Systems Log"):
-            st.session_state.debug_log = []
-        st.caption("**State Dump:**")
-        st.json({
-            "user_email":  st.session_state.user_email,
-            "account_id":  st.session_state.account_id,
-            "start_time":  str(st.session_state.start_time),
-            "total_hours": st.session_state.total_hours,
-            "event":       st.session_state.selected_event_name,
-            "history_len": len(st.session_state.history),
-        })
+    # SECURED ADMIN-ONLY UTILITIES
+    if is_admin:
+        st.subheader("🛠️ Management Controls")
 
-    st.caption("v4.9.0 | Safe Architecture Hotfix")
+        if st.button("🔄 Purge System Cache", use_container_width=True):
+            fetch_neon_opportunities.clear()
+            fetch_volunteer_hours.clear()
+            st.toast("System architecture caches successfully flushed!")
+            st.rerun()
 
+        with st.expander("🔧 Core Debug Arrays", expanded=False):
+            if st.session_state.debug_log:
+                for line in reversed(st.session_state.debug_log[-40:]):
+                    st.caption(line)
+            else:
+                st.caption("Buffer stack empty.")
+            if st.button("Clear Log Stack"):
+                st.session_state.debug_log = []
+            st.caption("**State Dump Data Matrix:**")
+            st.json({
+                "user_email":  st.session_state.user_email,
+                "account_id":  st.session_state.account_id,
+                "start_time":  str(st.session_state.start_time),
+                "total_hours": st.session_state.total_hours,
+                "event":       st.session_state.selected_event_name,
+                "history_len": len(st.session_state.history),
+            })
+
+    st.divider()
+    st.caption("v5.2.1 | Secured Administrative Node")
+
+# ---------------------------------------------------------------------------
 # DATA PIPELINE COLLECTION
+# ---------------------------------------------------------------------------
 if neon_configured():
     opps_raw, opps_err = fetch_neon_opportunities()
     if opps_err:
@@ -381,20 +424,21 @@ if not display_opts:
 if st.session_state.event_index >= len(display_opts):
     st.session_state.event_index = 0
 
-# ANALYTICS DASHBOARD METRICS
-m1, m2, m3 = st.columns(3)
+# ---------------------------------------------------------------------------
+# COMPACT ANALYTICS DASHBOARD (2-COLUMN MOBILE SAFE)
+# ---------------------------------------------------------------------------
+m1, m2 = st.columns(2)
 with m1:
     st.metric("YTD Hours Balance", f"{st.session_state.total_hours:.2f}")
 with m2:
-    st.metric("Session Shifts Tracked", len(st.session_state.history))
-with m3:
-    elapsed = fmt_duration(utc_now() - st.session_state.start_time) if st.session_state.start_time else "—"
-    st.metric("Active Run Duration", elapsed)
+    st.metric("Session Shifts", len(st.session_state.history))
 
 st.write("")
 
-# TRACKING ENGINE
-st.write("### 🕒")
+# ---------------------------------------------------------------------------
+# CORE TRACKING ENGINE
+# ---------------------------------------------------------------------------
+st.write("### 🕒 Shift Tracking Engine")
 
 with st.container(border=True):
     if st.session_state.pending_event:
@@ -418,15 +462,16 @@ with st.container(border=True):
 
     if st.session_state.start_time is None:
         if st.button("🟢 CLOCK IN", use_container_width=True):
+            # Fallback if no account context exists yet to prevent loose data telemetry
             if not st.session_state.user_email:
-                st.sidebar.error("🚨 Account Verification Required! Enter Email first.")
+                st.error("🚨 Account Context Required. Enter your email address in the sidebar menu to authenticate.")
             else:
                 st.session_state.start_time = utc_now()
                 dbg(f"Clocked IN | assignment: {chosen}")
                 st.rerun()
     else:
         elapsed_live = fmt_duration(utc_now() - st.session_state.start_time)
-        st.success(f"✅ Clocked in at {fmt_time(st.session_state.start_time)} ({elapsed_live} current duration)")
+        st.success(f"✅ Clocked In at: {fmt_time(st.session_state.start_time)} ({elapsed_live})")
 
     if st.session_state.start_time is not None:
         if st.button("🔴 CLOCK OUT", use_container_width=True):
@@ -436,7 +481,7 @@ with st.container(border=True):
             hours          = duration.total_seconds() / 3600
 
             pushed, push_err = False, ""
-            if neon_configured() and st.session_state.account_id != "demo-account":
+            if neon_configured() and st.session_state.account_id not in [None, "demo-account"]:
                 item = item_lookup.get(chosen, {})
                 with st.spinner("Syncing timeline metrics directly to CRM TimeSheets Engine..."):
                     pushed, push_err = push_shift_to_neon(
@@ -474,8 +519,10 @@ with st.container(border=True):
     st.write("")
     if not st.session_state.start_time:
         st.info("⚪ Please Clock In.")
-        
+
+# ---------------------------------------------------------------------------
 # LOCAL SESSION HISTORY MONITOR
+# ---------------------------------------------------------------------------
 if st.session_state.history:
     st.write("")
     st.write("### 📋 Current Session Log Entries")
@@ -490,7 +537,9 @@ if st.session_state.history:
             with c3:
                 st.write(f"**{entry['duration_h']:.2f}h**")
 
-# REMOTE SCHEDULE
+# ---------------------------------------------------------------------------
+# REMOTE SCHEDULE FEED EXPLORER
+# ---------------------------------------------------------------------------
 st.write("")
 st.write("### 📅 Live Schedule Feed & Opportunities")
 
@@ -508,7 +557,9 @@ else:
                     st.session_state.pending_event = opp["name"]
                     st.rerun()
 
+# ---------------------------------------------------------------------------
 # SYSTEM FOOTER
+# ---------------------------------------------------------------------------
 st.divider()
 st.markdown(
     "<div class='custom-footer'>© 2026 Autonomy Project | Data encrypted in transit</div>",
