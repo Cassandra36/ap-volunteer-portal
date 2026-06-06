@@ -4,7 +4,18 @@ import requests
 import base64
 from datetime import timedelta
 from zoneinfo import ZoneInfo
+import streamlit as st
 
+# Hides the Main Menu, Footer, and the Deploy Button
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .stAppDeployButton {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
 # PAGE CONFIG
 st.set_page_config(
     page_title="Autonomy Project – Volunteer Portal",
