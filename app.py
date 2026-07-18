@@ -2,6 +2,9 @@ import streamlit as st
 import datetime
 import requests
 import base64
+import json
+import os
+import re  # <--- ADD THIS LINE HERE
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
@@ -61,6 +64,43 @@ def fmt_duration(td):
     return f"{h}h {m:02d}m"
 
 # ---------------------------------------------------------------------------
+# PERSISTENT SHIFT MANAGER (JSON-BASED)
+# ---------------------------------------------------------------------------
+ACTIVE_SHIFTS_FILE = "active_shifts.json"
+
+def get_active_shift(account_id):
+    """Retrieves an ongoing shift for a specific user."""
+    if not os.path.exists(ACTIVE_SHIFTS_FILE):
+        return None
+    with open(ACTIVE_SHIFTS_FILE, "r") as f:
+        shifts = json.load(f)
+    return shifts.get(str(account_id))
+
+def save_active_shift(account_id, start_time_dt, event_name):
+    """Saves a user's clock-in time to the server."""
+    shifts = {}
+    if os.path.exists(ACTIVE_SHIFTS_FILE):
+        with open(ACTIVE_SHIFTS_FILE, "r") as f:
+            shifts = json.load(f)
+            
+    shifts[str(account_id)] = {
+        "start_time": start_time_dt.isoformat(),
+        "event_name": event_name
+    }
+    with open(ACTIVE_SHIFTS_FILE, "w") as f:
+        json.dump(shifts, f)
+
+def clear_active_shift(account_id):
+    """Removes the active shift once they clock out."""
+    if os.path.exists(ACTIVE_SHIFTS_FILE):
+        with open(ACTIVE_SHIFTS_FILE, "r") as f:
+            shifts = json.load(f)
+        if str(account_id) in shifts:
+            del shifts[str(account_id)]
+            with open(ACTIVE_SHIFTS_FILE, "w") as f:
+                json.dump(shifts, f)
+
+# ---------------------------------------------------------------------------
 # SESSION STATE
 # ---------------------------------------------------------------------------
 _DEFAULTS = {
@@ -108,33 +148,80 @@ def _neon_headers():
 # ── Opportunities ────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_neon_opportunities():
-    url    = f"{NEON_BASE}/opportunities"
-    params = {"currentPage": 0, "pageSize": 200}
-    try:
-        resp = requests.get(url, headers=_neon_headers(), params=params, timeout=10)
-    except Exception as e:
-        return [], str(e)
-    dbg(f"GET /opportunities → HTTP {resp.status_code}")
-    if not resp.ok:
-        return [], f"HTTP {resp.status_code}: {resp.text[:200]}"
-    raw = resp.json().get("opportunityList") or []
+    url = f"{NEON_BASE}/opportunities"
     parsed = []
-    for opp in raw:
-        name   = opp.get("name", "Untitled")
-        status = str(opp.get("status", "")).strip().upper()
-        if "template" in name.lower() or status != "ACTIVE":
-            continue
-        parsed.append({
-            "id":   str(opp.get("id", "")),
-            "name": name,
-            "date": "",
-            "time": "",
-            "type": "opportunity",
-        })
+    current_page = 0
+    today = datetime.datetime.now(tz=LOCAL_TZ).date()
+    
+    while True:
+        params = {"currentPage": current_page, "pageSize": 50}
+        try:
+            resp = requests.get(url, headers=_neon_headers(), params=params, timeout=10)
+        except Exception as e:
+            dbg(f"API Error on page {current_page}: {e}")
+            return parsed, str(e)
+            
+        if not resp.ok:
+            dbg(f"API Failed HTTP {resp.status_code}")
+            return parsed, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            
+        raw = resp.json().get("opportunityList") or []
+        if not raw:
+            break
+            
+        dbg(f"Page {current_page}: Fetched {len(raw)} raw items from API.")
+        
+        for opp in raw:
+            name   = opp.get("name", "Untitled")
+            status = str(opp.get("status", "")).strip().upper()
+            
+            # 1. Drop ONLY explicitly closed/inactive ones. Do NOT strictly require "ACTIVE".
+            if "template" in name.lower() or status in ["INACTIVE", "CLOSED", "CANCELED"]:
+                dbg(f"HIDDEN (Inactive/Template): {name} [Status: {status}]")
+                continue
+                
+            end_date_str = opp.get("endDate")
+            start_date_str = opp.get("startDate")
+            is_past = False
+            
+            # 2. If it has an explicit end date, judge it entirely on that.
+            if end_date_str:
+                try:
+                    end_date = datetime.datetime.strptime(str(end_date_str).split("T")[0], "%Y-%m-%d").date()
+                    if end_date < today:
+                        is_past = True
+                except Exception:
+                    pass
+            # 3. If NO end date, but it has a start date AND a date in the title (like your June events), it's a 1-day event.
+            elif start_date_str and re.search(r'\d{1,2}/\d{1,2}/\d{4}', name):
+                try:
+                    start_date = datetime.datetime.strptime(str(start_date_str).split("T")[0], "%Y-%m-%d").date()
+                    if start_date < today:
+                        is_past = True
+                except Exception:
+                    pass
+                    
+            if is_past:
+                dbg(f"HIDDEN (Past Date): {name} | End: {end_date_str} | Start: {start_date_str}")
+                continue
+                
+            # 4. It passed! Keep the event.
+            parsed.append({
+                "id":   str(opp.get("id", "")),
+                "name": name,
+                "date": "",
+                "time": "",
+                "type": "opportunity",
+            })
+            
+        if len(raw) < 50:
+            break
+        current_page += 1
+        
+    dbg(f"SUCCESS: Total valid opportunities parsed: {len(parsed)}")
     return parsed, ""
-
 # ── Shifts Lookup ────────────────────────────────────────────────────────────
-def get_or_create_active_shift(opportunity_id):
+def get_or_create_active_shift_neon(opportunity_id):
     url = f"{NEON_BASE}/opportunities/{opportunity_id}/shifts"
     try:
         resp = requests.get(url, headers=_neon_headers(), timeout=10)
@@ -208,7 +295,7 @@ def push_shift_to_neon(account_id, opportunity_id, target_dt, hours):
     monday = local_date - timedelta(days=local_date.weekday())
     week_of_str = monday.strftime("%Y-%m-%d")
 
-    shift_id, _ = get_or_create_active_shift(opportunity_id)
+    shift_id, _ = get_or_create_active_shift_neon(opportunity_id)
 
     _, existing_sheets = fetch_volunteer_hours(account_id)
     matched_sheet = None
@@ -339,12 +426,30 @@ with st.sidebar:
                         fetch_volunteer_hours.clear()
                         hours, _ = fetch_volunteer_hours(acct)
                         st.session_state.total_hours = hours
+                        
+                        # RESTORE ACTIVE SHIFT IF PRESENT
+                        active_shift = get_active_shift(acct)
+                        if active_shift:
+                            st.session_state.start_time = datetime.datetime.fromisoformat(active_shift["start_time"])
+                            st.session_state.selected_event_name = active_shift["event_name"]
+                            st.session_state.pending_event = active_shift["event_name"]
+                            st.toast("⚠️ Restored an active shift from your previous session.")
+                            
                         st.success("Profile loaded successfully!")
                         st.rerun()
                     else:
                         st.warning("Email not registered in database framework.")
             else:
                 st.session_state.account_id = "demo-account"
+                
+                # RESTORE ACTIVE SHIFT FOR DEMO ACCOUNT
+                active_shift = get_active_shift("demo-account")
+                if active_shift:
+                    st.session_state.start_time = datetime.datetime.fromisoformat(active_shift["start_time"])
+                    st.session_state.selected_event_name = active_shift["event_name"]
+                    st.session_state.pending_event = active_shift["event_name"]
+                    st.toast("⚠️ Restored an active shift from your previous session.")
+                    
                 st.success("Local sandbox profile initialized.")
                 st.rerun()
 
@@ -436,6 +541,15 @@ with m2:
 st.write("")
 
 # ---------------------------------------------------------------------------
+# LIVE TIMER FRAGMENT
+# ---------------------------------------------------------------------------
+@st.fragment(run_every=60)
+def live_timer_display():
+    if st.session_state.start_time is not None:
+        elapsed_live = fmt_duration(utc_now() - st.session_state.start_time)
+        st.success(f"✅ Clocked In at: {fmt_time(st.session_state.start_time)} ({elapsed_live})")
+
+# ---------------------------------------------------------------------------
 # CORE TRACKING ENGINE
 # ---------------------------------------------------------------------------
 st.write("### 🕒 Shift Tracking Engine")
@@ -467,11 +581,14 @@ with st.container(border=True):
                 st.error("🚨 Account Context Required. Enter your email address in the sidebar menu to authenticate.")
             else:
                 st.session_state.start_time = utc_now()
+                # Save to persistent storage
+                save_active_shift(st.session_state.account_id, st.session_state.start_time, chosen)
+                
                 dbg(f"Clocked IN | assignment: {chosen}")
                 st.rerun()
     else:
-        elapsed_live = fmt_duration(utc_now() - st.session_state.start_time)
-        st.success(f"✅ Clocked In at: {fmt_time(st.session_state.start_time)} ({elapsed_live})")
+        # Calls the auto-refreshing UI component
+        live_timer_display()
 
     if st.session_state.start_time is not None:
         if st.button("🔴 CLOCK OUT", use_container_width=True):
@@ -506,7 +623,10 @@ with st.container(border=True):
             if not pushed:
                 st.session_state.total_hours = round(st.session_state.total_hours + hours, 2)
 
+            # Clear state and persistent storage
             st.session_state.start_time = None
+            clear_active_shift(st.session_state.account_id)
+            
             st.balloons()
             
             if pushed:
